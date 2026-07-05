@@ -31,6 +31,7 @@ Install only the current PartId folder:
 Mods/
   PartId/
     PartId.dll
+    pid-records.tsv
 ```
 
 Do not keep the legacy `Mods/SfsPidCore` folder installed at the same time. Loading both would split records across two base mods.

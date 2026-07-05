@@ -34,8 +34,6 @@ Mods/
     pid-records.tsv
 ```
 
-Do not keep the legacy `Mods/SfsPidCore` folder installed at the same time. Loading both would split records across two base mods.
-
 ## Release Status
 
 Current release: `v1.0.0`

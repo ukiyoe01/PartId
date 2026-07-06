@@ -233,7 +233,15 @@ namespace PartId
             string text;
             try
             {
-                text = File.ReadAllText(path);
+                // Open with FileShare.ReadWrite so we can read the blueprint even while the game
+                // still holds it open — e.g. right after it saves on a scene change. A plain
+                // File.ReadAllText requests FileShare.Read, which collides with the game's own
+                // open handle on Windows and throws "Sharing violation". That read failure left
+                // the pid cache empty, so consumer mods couldn't resolve parts and per-part data
+                // (such as a saved mass) appeared to reset. Sharing the handle avoids the clash.
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                using (var reader = new StreamReader(stream))
+                    text = reader.ReadToEnd();
             }
             catch (Exception ex)
             {

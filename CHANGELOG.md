@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.1.1
+
+- Fixed per-part data (such as a saved mass) appearing to reset on Windows. PartId reads
+  the current blueprint to resolve deterministic pids; the read used a share mode that
+  clashed with the game's own open handle right after it saved (e.g. on a scene change),
+  throwing "Sharing violation". The failed read left the pid cache empty, so consumer
+  mods could not resolve parts and their stored data looked lost. The blueprint is now
+  opened with `FileShare.ReadWrite`, so it reads fine even while the game holds it.
+- The mod now logs its version on load (`[PartId] v1.1.1 loaded ...`) to make diagnosing
+  installs from a log easier.
+
+Record format: `PartId.TypedRecords.v1` (unchanged).
+
+Public API version: `2`
+
 ## v1.1.0
 
 - **Blueprint and save files are now strictly read-only.** PartId no longer writes `pid` fields into blueprints — pids are computed deterministically on demand, so your builds are never modified or at risk of corruption.

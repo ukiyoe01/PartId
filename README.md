@@ -30,9 +30,10 @@ Install only the current PartId folder:
 ```text
 Mods/
   PartId/
-    PartId.dll
-    pid-records.tsv
+    PartId.dll             ← install this
+    pid-records.tsv        ← auto-created on first run, don't add it
 ```
+pid-records.tsv is created automatically on first run — you do not add it yourself.
 
 ## Release Status
 

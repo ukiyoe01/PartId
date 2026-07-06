@@ -6,8 +6,10 @@ Code-facing names stay idiomatic C#: the folder and DLL are `PartId`, the namesp
 
 It owns two responsibilities:
 
-- Assign and maintain a stable `pid` string on blueprint parts.
-- Store typed per-part records that other mods can share.
+- Give every blueprint part a stable `pid`, computed deterministically from the part itself.
+- Store typed per-part records (keyed by that pid) that other mods can share.
+
+**PartId never modifies your blueprint or save files — it treats them as strictly read-only.** A part's `pid` is computed on demand from the part's own identity (name + position), so the same craft resolves to the same pids on every machine. Shared blueprints and their per-part records therefore stay consistent across computers, with nothing ever written into your builds.
 
 ## How Consumers Use It
 
@@ -33,13 +35,13 @@ Mods/
     PartId.dll
 ```
 
-The mod creates `pid-records.tsv` in the same folder automatically on first run — you do not add it yourself.
+The mod creates `pid-records.tsv` in the same folder automatically on first run — you do not add it yourself. (This is PartId's own record file; the game's blueprint and save files are never touched.)
 
 Do not keep the legacy `Mods/SfsPidCore` folder installed at the same time. Loading both would split records across two base mods.
 
 ## Release Status
 
-Current release: `v1.0.0`
+Current release: `v1.1.0`
 
 The record format is stable as `PartId.TypedRecords.v1`. Future Part ID (PID) releases should keep reading this format.
 
@@ -106,7 +108,6 @@ string[] supportedTypes = PartIdApi.GetSupportedValueTypes();
 string[] massTypes = PartIdApi.GetCommonKeyValueTypes(PartIdKeys.Physics.Mass);
 
 PartIdApi.Ensure();
-PartIdApi.EnsureBlueprintPids(true);
 
 if (PartIdApi.TryGetPid(part, out string pid))
 {

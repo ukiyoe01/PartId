@@ -3,7 +3,6 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
-using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -14,10 +13,7 @@ namespace PartId
     public sealed class PartIdRuntime : MonoBehaviour
     {
         internal const string PidKey = "pid";
-        internal const string LegacyPidKey = "amm_id";
-        internal const string BadPidKey = "pid_id";
         internal const string PidPrefix = "pid_";
-        const string LegacyPidPrefix = "amm_";
         const BindingFlags AllMembers = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
 
         static PartIdRuntime instance;
@@ -109,10 +105,10 @@ namespace PartId
             }
 
             // Match by the part's own key only. We deliberately do NOT fall back to scanning the
-            // build grid for this part's index: TryGetRuntimePartIndex is an O(N) walk of every
-            // part, and calling it once per part during a bulk restore (every part on scene load)
-            // is O(N²) — that was stalling large craft for many seconds. Same-key-collision parts
-            // are rare and simply aren't individually resolvable without that scan.
+            // build grid for this part's index: that is an O(N) walk of every part, and calling it
+            // once per part during a bulk restore (every part on scene load) is O(N²) — that was
+            // stalling large craft for many seconds. Same-key-collision parts are rare and simply
+            // aren't individually resolvable without that scan.
 
             if (TryGetOnlyPid(out pid, out string onlyPartKey))
             {
@@ -128,29 +124,6 @@ namespace PartId
             return false;
         }
 
-        // Only trust an index-based match if it actually agrees with the part's own key (or we
-        // have no key to compare against). A bare index match against a different part's key
-        // means the live scene order has drifted from the cached file-parse order, and using it
-        // would silently steal another part's pid and records.
-        static bool TryGetIndexMatch(int runtimeIndex, string expectedPartKey, out string pid, out string partKey)
-        {
-            pid = pidByPartIndex[runtimeIndex] as string;
-            string indexPartKey = partKeyByPartIndex[runtimeIndex] as string;
-            partKey = expectedPartKey;
-
-            if (string.IsNullOrEmpty(pid))
-                return false;
-
-            if (!string.IsNullOrEmpty(expectedPartKey) && expectedPartKey != indexPartKey)
-            {
-                pid = null;
-                return false;
-            }
-
-            partKey = indexPartKey ?? expectedPartKey;
-            return true;
-        }
-
         internal static bool TryBuildPartKey(object part, out string key)
         {
             key = null;
@@ -159,16 +132,6 @@ namespace PartId
 
             key = BuildPartKey(name, position);
             return true;
-        }
-
-        internal static string NormalizePid(string pid)
-        {
-            if (string.IsNullOrEmpty(pid))
-                return pid;
-
-            return pid.StartsWith(LegacyPidPrefix, StringComparison.Ordinal)
-                ? PidPrefix + pid.Substring(LegacyPidPrefix.Length)
-                : pid;
         }
 
         internal static string GetGameAppRootPath()
@@ -289,10 +252,10 @@ namespace PartId
                 while (usedPids[pid] != null && salt < 10000)
                     pid = DeterministicPid(record.PartKey, ordinal, ++salt);
 
-                // If the part currently carries a different pid (an old random id, a legacy amm_
-                // id, etc.), move its stored records onto the new deterministic pid so existing
-                // data is preserved rather than orphaned.
-                string oldPid = NormalizePid(record.Pid);
+                // If the part still carries an older pid (e.g. a random id written by an early
+                // PartId version), move its stored records onto the new deterministic pid so
+                // existing data is preserved rather than orphaned.
+                string oldPid = record.Pid;
                 if (!string.IsNullOrEmpty(oldPid) && oldPid != pid)
                     PartIdRecordStore.MigratePid(oldPid, pid);
 
@@ -310,11 +273,11 @@ namespace PartId
                 }
             }
 
-            // NOTE: PartId no longer writes pids back into the blueprint file. With deterministic
-            // pids every part's id can be recomputed on demand, so there is no need to modify the
-            // player's blueprint/save files at all — they are treated as strictly read-only. This
-            // removes any risk of corrupting or "polluting" the player's builds, and a shared file
-            // still resolves to identical pids on every machine (the values are computed, not stored).
+            // NOTE: PartId never writes pids back into the blueprint file. With deterministic pids
+            // every part's id is recomputed on demand, so there is no need to modify the player's
+            // blueprint/save files at all — they are treated as strictly read-only. This removes
+            // any risk of corrupting or "polluting" the player's builds, and a shared file still
+            // resolves to identical pids on every machine (the values are computed, not stored).
 
             if (updateRuntimeCache)
             {
@@ -323,27 +286,6 @@ namespace PartId
             }
 
             return true;
-        }
-
-        static void EnsureSavedBlueprintPids()
-        {
-            string appRoot = GetGameAppRootPath();
-            if (string.IsNullOrEmpty(appRoot))
-                return;
-
-            string blueprintsRoot = Path.Combine(appRoot, "Saving", "Blueprints");
-            if (!Directory.Exists(blueprintsRoot))
-                return;
-
-            try
-            {
-                foreach (string blueprintPath in Directory.GetFiles(blueprintsRoot, "Blueprint.txt", SearchOption.AllDirectories))
-                    EnsureBlueprintFilePids(blueprintPath, false, false);
-            }
-            catch (Exception ex)
-            {
-                Debug.Log("[PartId] Scan saved blueprints failed: " + ex);
-            }
         }
 
         static string FindCurrentBlueprintPath()
@@ -412,9 +354,6 @@ namespace PartId
                 if (TryParseBlueprintPart(json, out BlueprintPartRecord record))
                 {
                     record.Index = records.Count;
-                    record.Start = objectStart;
-                    record.Length = objectEnd - objectStart + 1;
-                    record.Json = json;
                     records.Add(record);
                 }
 
@@ -438,23 +377,12 @@ namespace PartId
             if (!TryReadJsonNumber(positionBody, "x", out float x) || !TryReadJsonNumber(positionBody, "y", out float y))
                 return false;
 
-            MatchCollection pidMatches = Regex.Matches(json, "\"" + PidKey + "\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
-            Match pidMatch = pidMatches.Count > 0 ? pidMatches[0] : Match.Empty;
-            Match legacyPidMatch = Regex.Match(json, "\"" + LegacyPidKey + "\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
-            Match badPidMatch = Regex.Match(json, "\"" + BadPidKey + "\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
+            Match pidMatch = Regex.Match(json, "\"" + PidKey + "\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
 
             record.Name = name;
             record.Position = new Vector2(x, y);
             record.PartKey = BuildPartKey(name, record.Position);
-            record.Pid = pidMatch.Success
-                ? UnescapeJsonString(pidMatch.Groups[1].Value)
-                : legacyPidMatch.Success
-                    ? UnescapeJsonString(legacyPidMatch.Groups[1].Value)
-                    : badPidMatch.Success ? UnescapeJsonString(badPidMatch.Groups[1].Value) : "";
-            record.NeedsPidRewrite = pidMatches.Count != 1 ||
-                                      legacyPidMatch.Success ||
-                                      badPidMatch.Success ||
-                                      record.Pid.StartsWith(LegacyPidPrefix, StringComparison.Ordinal);
+            record.Pid = pidMatch.Success ? UnescapeJsonString(pidMatch.Groups[1].Value) : "";
             return true;
         }
 
@@ -498,56 +426,11 @@ namespace PartId
             return -1;
         }
 
-        static string AddOrReplacePid(string json, string pid)
-        {
-            json = CleanPidFields(json);
-            string escapedPid = EscapeJsonString(pid);
-            int close = json.LastIndexOf('}');
-            if (close < 0)
-                return json;
-
-            string prefix = json.Substring(0, close).TrimEnd();
-            return prefix + ",\n      \"" + PidKey + "\": \"" + escapedPid + "\"\n    }";
-        }
-
-        static string CleanPidFields(string json)
-        {
-            json = RemoveStringField(json, PidKey);
-
-            return CleanLegacyPidFields(json);
-        }
-
-        static string CleanLegacyPidFields(string json)
-        {
-            json = RemoveStringField(json, LegacyPidKey);
-
-            return RemoveStringField(json, BadPidKey);
-        }
-
-        static string RemoveStringField(string json, string key)
-        {
-            return Regex.Replace(
-                json,
-                "(?<leading>\\s*,\\s*)?\\s*\"" + Regex.Escape(key) + "\"\\s*:\\s*\"(?:\\\\.|[^\"\\\\])*\"(?<trailing>\\s*,\\s*)?",
-                match =>
-                {
-                    bool hasLeadingComma = match.Groups["leading"].Success;
-                    bool hasTrailingComma = match.Groups["trailing"].Success;
-                    return hasLeadingComma && hasTrailingComma ? match.Groups["leading"].Value : "";
-                },
-                RegexOptions.Singleline);
-        }
-
         static bool TryReadJsonNumber(string json, string name, out float value)
         {
             value = 0f;
             Match match = Regex.Match(json, "\"" + name + "\"\\s*:\\s*(\"?)([-+0-9.Ee]+)\\1");
             return match.Success && float.TryParse(match.Groups[2].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
-        }
-
-        static string NewPid()
-        {
-            return PidPrefix + Guid.NewGuid().ToString("N");
         }
 
         static string DeterministicPid(string partKey, int ordinal)
@@ -669,174 +552,6 @@ namespace PartId
             }
 
             return false;
-        }
-
-        static bool TryGetRuntimePartIndex(object part, out int index)
-        {
-            index = -1;
-            if (!IsUsablePart(part))
-                return false;
-
-            Type buildGridType = FindType("SFS.Builds.BuildGrid");
-            if (buildGridType == null)
-                return false;
-
-            foreach (object grid in GetBuildGridCandidates(buildGridType))
-            {
-                object activeGrid = GetMemberValue(grid.GetType(), grid, "activeGrid");
-                if (TryGetPartIndexFromPartGrid(activeGrid, part, out index))
-                    return true;
-
-                object inactiveGrid = GetMemberValue(grid.GetType(), grid, "inactiveGrid");
-                if (TryGetPartIndexFromPartGrid(inactiveGrid, part, out index))
-                    return true;
-            }
-
-            return false;
-        }
-
-        static object[] GetBuildGridCandidates(Type buildGridType)
-        {
-            ArrayList list = new ArrayList();
-
-            foreach (object grid in GetSingletonsAndInstances(buildGridType))
-                AddUnique(list, grid);
-
-            foreach (string ownerName in new[] { "SFS.Builds.BuildManager", "SFS.Builds.BuildState" })
-            {
-                Type ownerType = FindType(ownerName);
-                if (ownerType == null)
-                    continue;
-
-                foreach (object owner in GetSingletonsAndInstances(ownerType))
-                {
-                    object grid = GetMemberValue(ownerType, owner, "buildGrid");
-                    if (grid != null)
-                        AddUnique(list, grid);
-                }
-            }
-
-            return list.Cast<object>().ToArray();
-        }
-
-        static bool TryGetPartIndexFromPartGrid(object partGrid, object part, out int index)
-        {
-            index = -1;
-            if (partGrid == null)
-                return false;
-
-            object partsHolder = GetMemberValue(partGrid.GetType(), partGrid, "partsHolder");
-            if (TryGetPartIndexFromCollection(partsHolder, part, out index))
-                return true;
-
-            return TryGetPartIndexFromCollection(partGrid, part, out index);
-        }
-
-        static bool TryGetPartIndexFromCollection(object source, object part, out int index)
-        {
-            index = -1;
-            if (source == null)
-                return false;
-
-            object parts = null;
-            MethodInfo getArray = source.GetType().GetMethod("GetArray", AllMembers, null, Type.EmptyTypes, null);
-            if (getArray != null)
-            {
-                try
-                {
-                    parts = getArray.Invoke(source, null);
-                }
-                catch
-                {
-                }
-            }
-
-            if (parts == null)
-                parts = GetMemberValue(source.GetType(), source, "parts");
-
-            if (!(parts is IEnumerable enumerable) || parts is string)
-                return false;
-
-            int currentIndex = 0;
-            foreach (object candidate in enumerable)
-            {
-                if (SameUnityObject(candidate, part))
-                {
-                    index = currentIndex;
-                    return true;
-                }
-
-                currentIndex++;
-            }
-
-            return false;
-        }
-
-        static bool SameUnityObject(object a, object b)
-        {
-            if (ReferenceEquals(a, b))
-                return true;
-
-            try
-            {
-                if (a is UnityEngine.Object unityA && b is UnityEngine.Object unityB)
-                    return unityA == unityB;
-            }
-            catch
-            {
-            }
-
-            return false;
-        }
-
-        static object[] GetSingletonsAndInstances(Type type)
-        {
-            ArrayList list = new ArrayList();
-
-            foreach (string name in new[] { "main", "Main", "instance", "Instance" })
-            {
-                object value = GetMemberValue(type, null, name);
-                if (value != null)
-                    list.Add(value);
-            }
-
-            try
-            {
-#pragma warning disable CS0618
-                foreach (object obj in UnityEngine.Object.FindObjectsOfType(type))
-#pragma warning restore CS0618
-                    if (obj != null)
-                        list.Add(obj);
-            }
-            catch
-            {
-            }
-
-            return list.Cast<object>().Distinct().ToArray();
-        }
-
-        static bool IsUsablePart(object part)
-        {
-            if (part == null)
-                return false;
-
-            try
-            {
-                if (part is UnityEngine.Object unityObject && unityObject == null)
-                    return false;
-            }
-            catch
-            {
-                return false;
-            }
-
-            return part.GetType().FullName == "SFS.Parts.Part";
-        }
-
-        static void AddUnique(ArrayList list, object value)
-        {
-            if (value != null && !list.Contains(value))
-                list.Add(value);
         }
 
         static bool TryExtractNumber(object value, out double number)
@@ -962,21 +677,22 @@ namespace PartId
             return null;
         }
 
-        static Type FindType(string fullName)
+        static bool IsUsablePart(object part)
         {
-            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            if (part == null)
+                return false;
+
+            try
             {
-                Type type = assembly.GetType(fullName, false);
-                if (type != null)
-                    return type;
+                if (part is UnityEngine.Object unityObject && unityObject == null)
+                    return false;
+            }
+            catch
+            {
+                return false;
             }
 
-            return null;
-        }
-
-        static string EscapeJsonString(string value)
-        {
-            return (value ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"");
+            return part.GetType().FullName == "SFS.Parts.Part";
         }
 
         static string UnescapeJsonString(string value)
@@ -987,28 +703,10 @@ namespace PartId
         class BlueprintPartRecord
         {
             public int Index;
-            public int Start;
-            public int Length;
-            public string Json;
             public string Name;
             public Vector2 Position;
             public string PartKey;
             public string Pid;
-            public bool NeedsPidRewrite;
-        }
-
-        class BlueprintReplacement
-        {
-            public readonly int Start;
-            public readonly int Length;
-            public readonly string Text;
-
-            public BlueprintReplacement(int start, int length, string text)
-            {
-                Start = start;
-                Length = length;
-                Text = text;
-            }
         }
     }
 }

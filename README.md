@@ -37,11 +37,9 @@ Mods/
 
 The mod creates `pid-records.tsv` in the same folder automatically on first run — you do not add it yourself. (This is PartId's own record file; the game's blueprint and save files are never touched.)
 
-Do not keep the legacy `Mods/SfsPidCore` folder installed at the same time. Loading both would split records across two base mods.
-
 ## Release Status
 
-Current release: `v1.1.0`
+Current release: `v1.1.1`
 
 The record format is stable as `PartId.TypedRecords.v1`. Future Part ID (PID) releases should keep reading this format.
 

@@ -187,8 +187,6 @@ Future versions should keep reading v1 records. If the on-disk format changes, a
 
 Increase `ApiVersion` only when public API behavior changes in a way that consumers may need to detect. Increase `CommonKeysVersion` when `COMMON_KEYS.md` changes in a way that affects shared vocabulary.
 
-PartId can migrate legacy records from `Mods/SfsPidCore/pid-records.tsv` into `Mods/PartId/pid-records.tsv` on first record-file creation. Do not keep both mods installed at the same time.
-
 Mods should ignore records they do not own.
 
 Mods should not write into another mod's `owner` namespace unless both mods intentionally agree on shared keys.

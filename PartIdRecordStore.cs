@@ -181,62 +181,12 @@ namespace PartId
                     Directory.CreateDirectory(directory);
 
                 if (!File.Exists(path))
-                {
-                    if (!TryMigrateLegacyRecordFile(path))
-                        File.WriteAllText(path, Header + Environment.NewLine);
-                }
+                    File.WriteAllText(path, Header + Environment.NewLine);
             }
             catch (Exception ex)
             {
                 Debug.Log("[PartId] Create pid record file failed: " + ex);
             }
-        }
-
-        static bool TryMigrateLegacyRecordFile(string targetPath)
-        {
-            string legacyPath = GetLegacyRecordFilePath();
-            if (string.IsNullOrEmpty(legacyPath) || !File.Exists(legacyPath))
-                return false;
-
-            try
-            {
-                string directory = Path.GetDirectoryName(targetPath);
-                if (!string.IsNullOrEmpty(directory))
-                    Directory.CreateDirectory(directory);
-
-                var lines = new List<string>();
-                foreach (string line in File.ReadAllLines(legacyPath))
-                {
-                    if (line.StartsWith("#", StringComparison.Ordinal))
-                    {
-                        lines.Add(Header);
-                        continue;
-                    }
-
-                    lines.Add(line);
-                }
-
-                if (lines.Count == 0 || !lines[0].StartsWith("#", StringComparison.Ordinal))
-                    lines.Insert(0, Header);
-
-                File.WriteAllLines(targetPath, lines.ToArray());
-                Debug.Log("[PartId] Migrated legacy SfsPidCore records: " + legacyPath + " -> " + targetPath);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Debug.Log("[PartId] Legacy SfsPidCore record migration failed: " + ex);
-                return false;
-            }
-        }
-
-        static string GetLegacyRecordFilePath()
-        {
-            string appRoot = PartIdRuntime.GetGameAppRootPath();
-            if (!string.IsNullOrEmpty(appRoot))
-                return Path.Combine(appRoot, "Mods", "SfsPidCore", "pid-records.tsv");
-
-            return Path.Combine(Application.persistentDataPath, "SfsPidCore", "pid-records.tsv");
         }
 
         static void Load()
@@ -263,7 +213,7 @@ namespace PartId
                     if (parts.Length < 6 || parts[0] != "v1")
                         continue;
 
-                    string pid = PartIdRuntime.NormalizePid(parts[1]);
+                    string pid = parts[1];
                     if (!IsValidPid(pid))
                         continue;
 
@@ -329,7 +279,7 @@ namespace PartId
 
         static string NormalizeInputPid(string pid)
         {
-            return PartIdRuntime.NormalizePid((pid ?? "").Trim());
+            return (pid ?? "").Trim();
         }
 
         static bool IsValidPid(string pid)

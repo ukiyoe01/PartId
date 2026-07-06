@@ -1,5 +1,4 @@
 using System;
-using System.Reflection;
 using PartId;
 using UnityEngine;
 
@@ -20,7 +19,6 @@ class VerifyPartIdValues
         CheckCommonKeys();
         CheckCommonKeySchema();
         CheckRecordModel();
-        CheckBlueprintPidCleanup();
 
         if (failures == 0)
         {
@@ -171,27 +169,6 @@ class VerifyPartIdValues
         Expect(typeof(PartIdApi).GetMethod("GetRecordsForPidList") != null, "GetRecordsForPidList API");
         Expect(typeof(PartIdApi).GetMethod("GetRecordsForOwner") != null, "GetRecordsForOwner API");
         Expect(typeof(PartIdApi).GetMethod("GetAllRecords") != null, "GetAllRecords API");
-    }
-
-    static void CheckBlueprintPidCleanup()
-    {
-        Type runtime = typeof(PartIdRuntime);
-        MethodInfo clean = runtime.GetMethod("CleanPidFields", BindingFlags.NonPublic | BindingFlags.Static);
-        MethodInfo add = runtime.GetMethod("AddOrReplacePid", BindingFlags.NonPublic | BindingFlags.Static);
-
-        string first = (string)clean.Invoke(null, new object[] { "{\"pid\":\"pid_old\",\"n\":\"Capsule\",\"p\":{\"x\":0,\"y\":0}}" });
-        Expect(!first.Contains("{,"), "clean pid when first field");
-        Expect(!first.Contains("\"pid\""), "clean removes pid field");
-
-        string middle = (string)clean.Invoke(null, new object[] { "{\"n\":\"Capsule\",\"pid\":\"pid_old\",\"p\":{\"x\":0,\"y\":0}}" });
-        Expect(!middle.Contains(",,") && !middle.Contains(",}"), "clean pid when middle field");
-
-        string legacy = (string)clean.Invoke(null, new object[] { "{\"n\":\"Capsule\",\"amm_id\":\"amm_old\",\"pid_id\":\"pid_bad\",\"p\":{\"x\":0,\"y\":0}}" });
-        Expect(!legacy.Contains("amm_id") && !legacy.Contains("pid_id"), "clean legacy pid fields");
-
-        string added = (string)add.Invoke(null, new object[] { "{\"pid\":\"pid_old\",\"n\":\"Capsule\",\"p\":{\"x\":0,\"y\":0}}", "pid_new" });
-        Expect(added.Contains("\"pid\": \"pid_new\""), "add replacement pid");
-        Expect(!added.Contains("pid_old"), "old pid removed before replacement");
     }
 
     static bool Nearly(double left, double right)

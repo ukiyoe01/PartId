@@ -86,8 +86,6 @@ PartId currently accepts any non-empty string beginning with `pid_`, but generat
 
 Generated ids are **deterministic**: PartId computes a part's pid from its identity (name + rounded position), so the same part resolves to the same pid on any machine. PartId does **not** write pids into blueprint or save files — they are computed on demand and only referenced by records in `pid-records.tsv`.
 
-Legacy pids beginning with `amm_` are normalized to `pid_` by replacing only the prefix.
-
 ## Owner And Key Rules
 
 `owner` should be a stable mod identifier.
@@ -220,15 +218,3 @@ Readers must ignore:
 - Lines with invalid pids.
 
 Future formats should use a new record version, for example `v2`, and keep reading `v1`.
-
-## Legacy Migration
-
-When `Mods/PartId/pid-records.tsv` does not exist, PartId tries to copy legacy records from:
-
-```text
-Mods/SfsPidCore/pid-records.tsv
-```
-
-The copied file receives the current `PartId.TypedRecords.v1` header.
-
-Do not keep `SfsPidCore.dll` installed together with `PartId.dll`.

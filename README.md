@@ -25,15 +25,17 @@ For a reflection-based soft dependency template, see [examples/SoftDependencyBri
 
 ## Install
 
-Install only the current PartId folder:
+Install just `PartId.dll`:
 
 ```text
 Mods/
   PartId/
-    PartId.dll             ← install this
-    pid-records.tsv        ← auto-created on first run, don't add it
+    PartId.dll
 ```
-pid-records.tsv is created automatically on first run — you do not add it yourself.
+
+The mod creates `pid-records.tsv` in the same folder automatically on first run — you do not add it yourself.
+
+Do not keep the legacy `Mods/SfsPidCore` folder installed at the same time. Loading both would split records across two base mods.
 
 ## Release Status
 

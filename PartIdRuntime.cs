@@ -42,8 +42,25 @@ namespace PartId
 
         void Awake()
         {
-            PartIdRecordStore.EnsureRecordFileExists();
-            EnsureBlueprintPids(true);
+            // Wrapped so a failure can never hang or crash the game during mod load; the periodic
+            // Update() retries, so the worst case is pids simply aren't assigned yet.
+            try
+            {
+                PartIdRecordStore.EnsureRecordFileExists();
+            }
+            catch (Exception ex)
+            {
+                Debug.Log("[PartId] EnsureRecordFileExists failed: " + ex);
+            }
+
+            try
+            {
+                EnsureBlueprintPids(true);
+            }
+            catch (Exception ex)
+            {
+                Debug.Log("[PartId] EnsureBlueprintPids (Awake) failed: " + ex);
+            }
         }
 
         void Update()
@@ -65,11 +82,12 @@ namespace PartId
                 return false;
             }
 
-            bool result = EnsureBlueprintFilePids(path, true, force);
-            if (result)
-                EnsureSavedBlueprintPids();
-
-            return result;
+            // Only the CURRENT world's blueprint is processed. We deliberately do NOT scan and
+            // rewrite every saved blueprint: with deterministic pids, a saved blueprint resolves
+            // to the same pids whenever it is actually loaded, so touching them all up front is
+            // unnecessary — and doing it during mod load hung the game for players with hundreds
+            // of saved blueprints (each one parsed and rewritten synchronously on the main thread).
+            return EnsureBlueprintFilePids(path, true, force);
         }
 
         internal static bool TryGetPidForPart(object part, out string pid, out string partKey)
@@ -90,10 +108,11 @@ namespace PartId
                     return true;
             }
 
-            int runtimeIndex = -1;
-            bool hasRuntimeIndex = TryGetRuntimePartIndex(part, out runtimeIndex);
-            if (hasRuntimeIndex && TryGetIndexMatch(runtimeIndex, partKey, out pid, out partKey))
-                return true;
+            // Match by the part's own key only. We deliberately do NOT fall back to scanning the
+            // build grid for this part's index: TryGetRuntimePartIndex is an O(N) walk of every
+            // part, and calling it once per part during a bulk restore (every part on scene load)
+            // is O(N²) — that was stalling large craft for many seconds. Same-key-collision parts
+            // are rare and simply aren't individually resolvable without that scan.
 
             if (TryGetOnlyPid(out pid, out string onlyPartKey))
             {
@@ -101,18 +120,12 @@ namespace PartId
                 return true;
             }
 
-            EnsureBlueprintPids(true);
-
-            if (!string.IsNullOrEmpty(partKey) && ambiguousPartKeys[partKey] == null)
-                pid = pidByPartKey[partKey] as string;
-
-            if (string.IsNullOrEmpty(pid) && hasRuntimeIndex && TryGetIndexMatch(runtimeIndex, partKey, out pid, out partKey))
-                return true;
-
-            if (string.IsNullOrEmpty(pid) && TryGetOnlyPid(out pid, out onlyPartKey))
-                partKey = onlyPartKey;
-
-            return !string.IsNullOrEmpty(pid);
+            // Not found. We do NOT force a full blueprint re-parse here: EnsureBlueprintPids(false)
+            // above already refreshed the cache whenever the file changed, so re-parsing the same
+            // file would produce the same result — and doing it once per queried part turned bulk
+            // lookups (e.g. a consumer restoring every part on scene load) into O(N²) work that
+            // froze large craft. If it isn't in the fresh cache, it simply isn't resolvable now.
+            return false;
         }
 
         // Only trust an index-based match if it actually agrees with the part's own key (or we
@@ -236,16 +249,8 @@ namespace PartId
                 return false;
             }
 
-            bool changed = false;
-            var replacements = new List<BlueprintReplacement>();
             var usedPids = new Hashtable();
-
-            // Snapshot the previous run's pid maps before clearing, so that if the blueprint
-            // file lost its "pid" fields (e.g. the game's own save routine rewrote the file
-            // without knowing about our custom field), we can recover the same pid for the
-            // same part instead of minting a brand-new one and orphaning its records.
-            Hashtable previousPidByPartIndex = updateRuntimeCache ? (Hashtable)pidByPartIndex.Clone() : null;
-            Hashtable previousPidByPartKey = updateRuntimeCache ? (Hashtable)pidByPartKey.Clone() : null;
+            var partKeyCounts = new Dictionary<string, int>();
 
             if (updateRuntimeCache)
             {
@@ -260,34 +265,30 @@ namespace PartId
                 if (string.IsNullOrEmpty(record.PartKey))
                     continue;
 
-                string pid = NormalizePid(record.Pid);
-                bool needsRewrite = record.NeedsPidRewrite;
+                // Deterministic pid: derived from the part's identity (name + rounded position)
+                // and its ordinal among same-key parts, in blueprint file order. Any client
+                // reading the same blueprint computes the same pid, so a shared blueprint/save
+                // yields identical pids on every machine — no more random per-client divergence.
+                int ordinal = partKeyCounts.TryGetValue(record.PartKey, out int seen) ? seen : 0;
+                partKeyCounts[record.PartKey] = ordinal + 1;
 
-                if (string.IsNullOrEmpty(pid))
-                {
-                    pid = previousPidByPartIndex?[record.Index] as string;
-                    if (string.IsNullOrEmpty(pid))
-                        pid = previousPidByPartKey?[record.PartKey] as string;
-                    if (string.IsNullOrEmpty(pid))
-                        pid = NewPid();
+                string pid = DeterministicPid(record.PartKey, ordinal);
 
-                    needsRewrite = true;
-                }
+                // Collision guard (practically never triggers, since (partKey, ordinal) is
+                // unique): keep salting deterministically until the pid is unused here. Hard cap
+                // the retries so a pathological case can never spin forever and hang load.
+                int salt = 0;
+                while (usedPids[pid] != null && salt < 10000)
+                    pid = DeterministicPid(record.PartKey, ordinal, ++salt);
 
-                if (usedPids[pid] != null)
-                {
-                    pid = NewPid();
-                    needsRewrite = true;
-                }
+                // If the part currently carries a different pid (an old random id, a legacy amm_
+                // id, etc.), move its stored records onto the new deterministic pid so existing
+                // data is preserved rather than orphaned.
+                string oldPid = NormalizePid(record.Pid);
+                if (!string.IsNullOrEmpty(oldPid) && oldPid != pid)
+                    PartIdRecordStore.MigratePid(oldPid, pid);
 
                 usedPids[pid] = true;
-
-                string updatedJson = needsRewrite ? AddOrReplacePid(CleanPidFields(record.Json), pid) : CleanLegacyPidFields(record.Json);
-                if (updatedJson != record.Json)
-                {
-                    replacements.Add(new BlueprintReplacement(record.Start, record.Length, updatedJson));
-                    changed = true;
-                }
 
                 if (updateRuntimeCache)
                 {
@@ -301,28 +302,11 @@ namespace PartId
                 }
             }
 
-            if (changed && replacements.Count > 0)
-            {
-                replacements.Sort((a, b) => b.Start.CompareTo(a.Start));
-                var builder = new StringBuilder(text);
-                foreach (BlueprintReplacement replacement in replacements)
-                {
-                    builder.Remove(replacement.Start, replacement.Length);
-                    builder.Insert(replacement.Start, replacement.Text);
-                }
-
-                try
-                {
-                    File.WriteAllText(path, builder.ToString());
-                    writeTime = File.GetLastWriteTimeUtc(path);
-                    Debug.Log("[PartId] Wrote blueprint pid codes: " + path);
-                }
-                catch (Exception ex)
-                {
-                    Debug.Log("[PartId] Write blueprint pid codes failed: " + ex);
-                    return false;
-                }
-            }
+            // NOTE: PartId no longer writes pids back into the blueprint file. With deterministic
+            // pids every part's id can be recomputed on demand, so there is no need to modify the
+            // player's blueprint/save files at all — they are treated as strictly read-only. This
+            // removes any risk of corrupting or "polluting" the player's builds, and a shared file
+            // still resolves to identical pids on every machine (the values are computed, not stored).
 
             if (updateRuntimeCache)
             {
@@ -556,6 +540,48 @@ namespace PartId
         static string NewPid()
         {
             return PidPrefix + Guid.NewGuid().ToString("N");
+        }
+
+        static string DeterministicPid(string partKey, int ordinal)
+        {
+            return DeterministicPid(partKey, ordinal, 0);
+        }
+
+        // Produces a stable pid_<32 hex> from the part's key and its ordinal among same-key
+        // parts. Same inputs -> same pid on every machine, so a shared blueprint/save resolves
+        // to identical pids everywhere (letting records travel with the file). `salt` only
+        // changes the output if a collision ever needs to be broken, still deterministically.
+        //
+        // Uses a self-contained FNV-1a hash rather than System.Security.Cryptography (MD5/SHA):
+        // that crypto assembly can be stripped from the game's managed build on some platforms
+        // (notably Windows), where calling it would fail during mod load. Plain integer math is
+        // always available and identical across platforms, which is exactly what we need.
+        static string DeterministicPid(string partKey, int ordinal, int salt)
+        {
+            string input = (partKey ?? "") + "#" + ordinal.ToString(CultureInfo.InvariantCulture);
+            if (salt > 0)
+                input += "!" + salt.ToString(CultureInfo.InvariantCulture);
+
+            byte[] bytes = Encoding.UTF8.GetBytes(input);
+            // Two 64-bit FNV-1a passes with different seeds give 128 bits -> 32 hex chars.
+            ulong high = Fnv1a64(bytes, 14695981039346656037UL);
+            ulong low = Fnv1a64(bytes, 14695981039346656037UL ^ 0x9E3779B97F4A7C15UL);
+
+            return PidPrefix + high.ToString("x16", CultureInfo.InvariantCulture)
+                             + low.ToString("x16", CultureInfo.InvariantCulture);
+        }
+
+        static ulong Fnv1a64(byte[] data, ulong seed)
+        {
+            const ulong prime = 1099511628211UL;
+            ulong hash = seed;
+            foreach (byte b in data)
+            {
+                hash ^= b;
+                hash *= prime;
+            }
+
+            return hash;
         }
 
         static string BuildPartKey(string name, Vector2 position)

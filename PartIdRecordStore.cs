@@ -48,6 +48,39 @@ namespace PartId
             return Save();
         }
 
+        // Moves every record from oldPid onto newPid, across all owners. Used when a part's pid
+        // changes (e.g. an old random pid is replaced by a deterministic one) so its stored data
+        // follows the part instead of being orphaned.
+        public static bool MigratePid(string oldPid, string newPid)
+        {
+            Load();
+
+            oldPid = NormalizeInputPid(oldPid);
+            newPid = NormalizeInputPid(newPid);
+            if (!IsValidPid(oldPid) || !IsValidPid(newPid) || oldPid == newPid)
+                return false;
+
+            var toMove = new List<Record>();
+            foreach (Record record in records.Values)
+            {
+                if (record.Pid == oldPid)
+                    toMove.Add(record);
+            }
+
+            if (toMove.Count == 0)
+                return false;
+
+            foreach (Record record in toMove)
+            {
+                records.Remove(CompositeKey(record.Pid, record.Owner, record.Key));
+                var moved = new Record(newPid, record.Owner, record.Key, record.Value);
+                records[CompositeKey(newPid, record.Owner, record.Key)] = moved;
+            }
+
+            Debug.Log("[PartId] Migrated " + toMove.Count + " record(s) from " + oldPid + " to " + newPid + ".");
+            return Save();
+        }
+
         public static bool TryGetValue(string pid, string owner, string key, out PartIdValue value)
         {
             Load();

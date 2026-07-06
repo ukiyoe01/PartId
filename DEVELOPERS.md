@@ -8,7 +8,7 @@ Use it when a mod needs to attach data to a specific blueprint part and read tha
 
 ## Concepts
 
-- `pid`: A stable identifier stored on each blueprint part as `"pid": "pid_..."`.
+- `pid`: A stable identifier for a part, computed deterministically from the part itself (name + position). PartId does not write it into the blueprint — it is recomputed on demand, so builds are never modified and the same part resolves to the same pid on every machine.
 - `owner`: The mod namespace that owns a record, usually your `ModNameID`.
 - `key`: The field name inside your namespace.
 - `type`: The storage type of the payload.

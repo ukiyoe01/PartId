@@ -84,6 +84,8 @@ pid_<32 lowercase hex chars>
 
 PartId currently accepts any non-empty string beginning with `pid_`, but generated ids use the 32-hex form.
 
+Generated ids are **deterministic**: PartId computes a part's pid from its identity (name + rounded position), so the same part resolves to the same pid on any machine. PartId does **not** write pids into blueprint or save files — they are computed on demand and only referenced by records in `pid-records.tsv`.
+
 Legacy pids beginning with `amm_` are normalized to `pid_` by replacing only the prefix.
 
 ## Owner And Key Rules

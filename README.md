@@ -4,7 +4,7 @@
 
 Code-facing names stay idiomatic C#: the folder and DLL are `PartId`, the namespace is `PartId`, and the public API entry point is `PartIdApi`.
 
-It owns two responsibilities:
+It owns two responsibilities: 
 
 - Give every blueprint part a stable `pid`, computed deterministically from the part itself.
 - Store typed per-part records (keyed by that pid) that other mods can share.

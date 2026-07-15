@@ -1,4 +1,4 @@
-# Part ID (PID)
+# Part ID (PID)  v1.1.1
 
 **Part ID** — "PID" for short — is a dependency mod for other Spaceflight Simulator DLL mods. Here "PID" always means a stable *part* identifier; it has nothing to do with process IDs or PID controllers.
 

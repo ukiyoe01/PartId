@@ -84,7 +84,7 @@ pid_<32 lowercase hex chars>
 
 PartId currently accepts any non-empty string beginning with `pid_`, but generated ids use the 32-hex form.
 
-Generated ids are **deterministic**: PartId computes a part's pid from its identity (name + rounded position), so the same part resolves to the same pid on any machine. PartId does **not** write pids into blueprint or save files — they are computed on demand and only referenced by records in `pid-records.tsv`.
+For parts without a saved identity, PartId derives a deterministic initial pid from the part key and its ordinal. Once a live part is bound, SFS persists that pid as `partid_pid` through `PartSave.TEXT_VARIABLES` during normal saves. Moving or rotating the part therefore does not change its identity, and shared blueprints carry the same pid.
 
 ## Owner And Key Rules
 

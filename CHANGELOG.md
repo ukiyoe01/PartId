@@ -1,5 +1,48 @@
 # Changelog
 
+## v1.2.1
+
+- Prevented the single-blueprint-part fallback from assigning the same pid to a newly added second part.
+- Duplicate saved pids are repaired on load, so two live parts can never collapse into one consumer identity.
+- The record format and public API version are unchanged.
+
+## v1.2.0
+
+- Live build parts are bound directly to their pid, so moving or rotating a part never produces a
+  temporary `no pid` state and never waits for `Blueprint.txt` to be saved.
+- New and duplicated build parts receive a pid immediately.
+- Pids are persisted through SFS's own `PartSave.TEXT_VARIABLES` dictionary and restored by exact
+  save-array/part-array position. A moved part therefore keeps the same pid after restart and when
+  the blueprint is shared.
+- No flight-time geometry matching is used.
+
+Record format: `PartId.TypedRecords.v1` (unchanged).
+
+Public API version: `2`
+
+## v1.1.3
+
+- Removed flight-time pid recovery by relative rocket geometry. Runtime recentering can make
+  similar parts ambiguous, so consumers must capture a part's pid before launch instead of
+  guessing it after launch.
+- Kept the internal-name lookup that fixes build-scene parts such as `Hawk Engine` / `Engine Hawk`.
+
+Record format: `PartId.TypedRecords.v1` (unchanged).
+
+Public API version: `2`
+
+## v1.1.2
+
+- Fixed parts whose localized display name differs from the blueprint's internal name, such as
+  `Hawk Engine` / `Engine Hawk`, not resolving to a pid in the build scene.
+- Added flight-time pid recovery after SFS recentres blueprint positions under a Rocket. PartId
+  now matches a rocket's internal part names and relative geometry to the cached blueprint, then
+  caches the live Part-to-pid mapping for consumer mods.
+
+Record format: `PartId.TypedRecords.v1` (unchanged).
+
+Public API version: `2`
+
 ## v1.1.1
 
 - Fixed per-part data (such as a saved mass) appearing to reset on Windows. PartId reads

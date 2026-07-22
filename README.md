@@ -1,15 +1,15 @@
-# Part ID (PID)  v1.1.1
+# Part ID (PID)
 
 **Part ID** — "PID" for short — is a dependency mod for other Spaceflight Simulator DLL mods. Here "PID" always means a stable *part* identifier; it has nothing to do with process IDs or PID controllers.
 
 Code-facing names stay idiomatic C#: the folder and DLL are `PartId`, the namespace is `PartId`, and the public API entry point is `PartIdApi`.
 
-It owns two responsibilities: 
+It owns two responsibilities:
 
-- Give every blueprint part a stable `pid`, computed deterministically from the part itself.
+- Give every part a stable `pid` that survives movement, saving, reloading, and blueprint sharing.
 - Store typed per-part records (keyed by that pid) that other mods can share.
 
-**PartId never modifies your blueprint or save files — it treats them as strictly read-only.** A part's `pid` is computed on demand from the part's own identity (name + position), so the same craft resolves to the same pids on every machine. Shared blueprints and their per-part records therefore stay consistent across computers, with nothing ever written into your builds.
+PartId never rewrites blueprint or save files directly. New parts receive an identity immediately, and SFS stores it as `partid_pid` through its normal `PartSave.TEXT_VARIABLES` save path. This keeps the identity stable after moving a part and carries it with shared blueprints without a separate blueprint patcher.
 
 ## How Consumers Use It
 
@@ -39,7 +39,7 @@ The mod creates `pid-records.tsv` in the same folder automatically on first run 
 
 ## Release Status
 
-Current release: `v1.1.1`
+Current release: `v1.2.1`
 
 The record format is stable as `PartId.TypedRecords.v1`. Future Part ID (PID) releases should keep reading this format.
 

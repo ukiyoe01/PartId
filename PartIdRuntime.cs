@@ -6,6 +6,8 @@ using System.IO;
 using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
+using SFS.Builds;
+using SFS.Parts;
 using UnityEngine;
 
 namespace PartId
@@ -13,6 +15,7 @@ namespace PartId
     public sealed class PartIdRuntime : MonoBehaviour
     {
         internal const string PidKey = "pid";
+        internal const string SavedPidKey = "partid_pid";
         internal const string PidPrefix = "pid_";
         const BindingFlags AllMembers = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
 
@@ -21,10 +24,14 @@ namespace PartId
         static readonly Hashtable pidByPartIndex = new Hashtable();
         static readonly Hashtable partKeyByPartIndex = new Hashtable();
         static readonly Hashtable ambiguousPartKeys = new Hashtable();
+        static readonly Hashtable pidByLivePartInstance = new Hashtable();
+        static readonly Dictionary<string, string> internalNameByDisplayName = new Dictionary<string, string>();
+        static readonly HashSet<string> ambiguousDisplayNames = new HashSet<string>();
         static string cachedBlueprintPath;
         static DateTime cachedBlueprintWriteTimeUtc;
 
         float nextScan;
+        float nextBindingScan;
 
         public static void Ensure()
         {
@@ -61,11 +68,18 @@ namespace PartId
 
         void Update()
         {
-            if (Time.realtimeSinceStartup < nextScan)
-                return;
+            float now = Time.realtimeSinceStartup;
+            if (now >= nextScan)
+            {
+                nextScan = now + 2f;
+                EnsureBlueprintPids(false);
+            }
 
-            nextScan = Time.realtimeSinceStartup + 2f;
-            EnsureBlueprintPids(false);
+            if (now >= nextBindingScan)
+            {
+                nextBindingScan = now + 0.1f;
+                PrimeBuildPartBindings();
+            }
         }
 
         internal static bool EnsureBlueprintPids(bool force)
@@ -91,28 +105,49 @@ namespace PartId
             pid = null;
             partKey = null;
 
-            TryBuildPartKey(part, out partKey);
+            // A direct live-object binding is exact and survives movement and rotation. This is
+            // deliberately not geometry recovery: the cache entry also retains the actual Part
+            // reference, so a recycled Unity instance id can never resolve to another object.
+            if (TryGetLiveBinding(part, out pid, out partKey))
+                return true;
+
             EnsureBlueprintPids(false);
 
-            // Prefer matching by the part's own name+position key: it is intrinsic to the part
-            // and stays correct even when other parts are added/removed and shift the live
-            // scene's array order out of sync with the order cached from the last file parse.
-            if (!string.IsNullOrEmpty(partKey))
+            // Blueprint `n` stores the internal part name (for example "Engine Hawk"), while
+            // Part.Name returns the translated display name (for example "Hawk Engine"). Most
+            // English names happen to be identical, which hid this mismatch for common parts.
+            // Try both the GameObject/internal name and the display name before giving up.
+            if (TryGetPartPosition(part, out Vector2 position))
             {
-                pid = ambiguousPartKeys[partKey] == null ? pidByPartKey[partKey] as string : null;
-                if (!string.IsNullOrEmpty(pid))
-                    return true;
+                foreach (string name in GetPartNameCandidates(part))
+                {
+                    string candidateKey = BuildPartKey(name, position);
+                    string candidatePid = ambiguousPartKeys[candidateKey] == null ? pidByPartKey[candidateKey] as string : null;
+                    if (!string.IsNullOrEmpty(candidatePid) && !IsPidClaimedByAnotherPart(part, candidatePid))
+                    {
+                        pid = candidatePid;
+                        partKey = candidateKey;
+                        BindLivePart(part, pid, partKey);
+                        return true;
+                    }
+                }
             }
 
-            // Match by the part's own key only. We deliberately do NOT fall back to scanning the
-            // build grid for this part's index: that is an O(N) walk of every part, and calling it
-            // once per part during a bulk restore (every part on scene load) is O(N²) — that was
-            // stalling large craft for many seconds. Same-key-collision parts are rare and simply
-            // aren't individually resolvable without that scan.
-
-            if (TryGetOnlyPid(out pid, out string onlyPartKey))
+            if (TryGetOnlyPid(part, out pid, out string onlyPartKey))
             {
                 partKey = onlyPartKey;
+                BindLivePart(part, pid, partKey);
+                return true;
+            }
+
+            // Newly picked or duplicated build parts do not exist in Blueprint.txt yet. Give
+            // them an identity immediately; CreateSaves stores it in the official PartSave text
+            // variables so it remains stable after saving, moving, sharing, and reloading.
+            if (IsLiveBuildPart(part))
+            {
+                pid = CreateUniqueLivePid(part);
+                partKey = "live:" + pid;
+                BindLivePart(part, pid, partKey);
                 return true;
             }
 
@@ -124,13 +159,48 @@ namespace PartId
             return false;
         }
 
+        internal static bool GetOrAssignPid(object part, out string pid)
+        {
+            return TryGetPidForPart(part, out pid, out string _);
+        }
+
+        internal static void BindSavedPid(object part, string pid)
+        {
+            if (!IsValidPid(pid))
+                return;
+
+            if (IsPidClaimedByAnotherPart(part, pid))
+            {
+                string duplicate = pid;
+                pid = CreateUniqueLivePid(part);
+                Debug.LogWarning("[PartId] Replaced duplicate saved pid " + duplicate + " with " + pid + ".");
+            }
+
+            BindLivePart(part, pid, "saved:" + pid);
+        }
+
         internal static bool TryBuildPartKey(object part, out string key)
         {
             key = null;
-            if (!TryGetPartName(part, out string name) || !TryGetPartPosition(part, out Vector2 position))
+            if (!TryGetPartPosition(part, out Vector2 position))
                 return false;
 
-            key = BuildPartKey(name, position);
+            EnsureBlueprintPids(false);
+            List<string> names = GetPartNameCandidates(part);
+            foreach (string name in names)
+            {
+                string candidate = BuildPartKey(name, position);
+                if (pidByPartKey[candidate] != null || ambiguousPartKeys[candidate] != null)
+                {
+                    key = candidate;
+                    return true;
+                }
+            }
+
+            if (names.Count == 0)
+                return false;
+
+            key = BuildPartKey(names[0], position);
             return true;
         }
 
@@ -160,7 +230,118 @@ namespace PartId
             }
         }
 
-        static bool TryGetOnlyPid(out string pid, out string partKey)
+        static bool TryGetLiveBinding(object part, out string pid, out string partKey)
+        {
+            pid = null;
+            partKey = null;
+            if (!(part is UnityEngine.Object livePart) || livePart == null)
+                return false;
+
+            int id = livePart.GetInstanceID();
+            if (!(pidByLivePartInstance[id] is LivePartPid entry))
+                return false;
+
+            if (entry.Part == null || entry.Part != livePart)
+            {
+                pidByLivePartInstance.Remove(id);
+                return false;
+            }
+
+            pid = entry.Pid;
+            partKey = entry.PartKey;
+            return IsValidPid(pid);
+        }
+
+        static void BindLivePart(object part, string pid, string partKey)
+        {
+            if (!(part is UnityEngine.Object livePart) || livePart == null || !IsValidPid(pid))
+                return;
+
+            pidByLivePartInstance[livePart.GetInstanceID()] = new LivePartPid
+            {
+                Part = livePart,
+                Pid = pid,
+                PartKey = partKey ?? ""
+            };
+        }
+
+        static bool IsLiveBuildPart(object part)
+        {
+            if (!(part is Part buildPart) || buildPart == null || buildPart.Rocket != null || BuildManager.main == null)
+                return false;
+
+            try
+            {
+                BuildGrid grid = BuildManager.main.buildGrid;
+                if (grid != null &&
+                    ((grid.activeGrid != null && grid.activeGrid.partsHolder != null && grid.activeGrid.partsHolder.ContainsPart(buildPart)) ||
+                     (grid.inactiveGrid != null && grid.inactiveGrid.partsHolder != null && grid.inactiveGrid.partsHolder.ContainsPart(buildPart))))
+                    return true;
+
+                HoldGrid hold = BuildManager.main.holdGrid;
+                return hold != null && hold.holdGrid != null && hold.holdGrid.partsHolder != null &&
+                    hold.holdGrid.partsHolder.ContainsPart(buildPart);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        static void PrimeBuildPartBindings()
+        {
+            if (BuildManager.main == null)
+                return;
+
+            try
+            {
+                BuildGrid grid = BuildManager.main.buildGrid;
+                if (grid != null)
+                {
+                    PrimeHolder(grid.activeGrid == null ? null : grid.activeGrid.partsHolder);
+                    PrimeHolder(grid.inactiveGrid == null ? null : grid.inactiveGrid.partsHolder);
+                }
+
+                HoldGrid hold = BuildManager.main.holdGrid;
+                if (hold != null && hold.holdGrid != null)
+                    PrimeHolder(hold.holdGrid.partsHolder);
+            }
+            catch
+            {
+            }
+
+            var stale = new List<int>();
+            foreach (DictionaryEntry item in pidByLivePartInstance)
+            {
+                if (!(item.Value is LivePartPid entry) || entry.Part == null)
+                    stale.Add((int)item.Key);
+            }
+            foreach (int id in stale)
+                pidByLivePartInstance.Remove(id);
+        }
+
+        static void PrimeHolder(PartHolder holder)
+        {
+            if (holder == null)
+                return;
+
+            Part[] parts = holder.GetArray();
+            if (parts == null)
+                return;
+
+            foreach (Part part in parts)
+            {
+                if (part != null)
+                    TryGetPidForPart(part, out string _, out string _);
+            }
+        }
+
+        static bool IsValidPid(string pid)
+        {
+            return !string.IsNullOrWhiteSpace(pid) && pid.StartsWith(PidPrefix, StringComparison.Ordinal);
+        }
+
+        static bool TryGetOnlyPid(object part, out string pid, out string partKey)
         {
             pid = null;
             partKey = null;
@@ -172,10 +353,35 @@ namespace PartId
             {
                 pid = entry.Value as string;
                 partKey = partKeyByPartIndex[entry.Key] as string ?? "index:" + Convert.ToString(entry.Key, CultureInfo.InvariantCulture);
-                return !string.IsNullOrEmpty(pid);
+                return !string.IsNullOrEmpty(pid) && !IsPidClaimedByAnotherPart(part, pid);
             }
 
             return false;
+        }
+
+        static bool IsPidClaimedByAnotherPart(object part, string pid)
+        {
+            if (!(part is UnityEngine.Object livePart) || livePart == null || !IsValidPid(pid))
+                return false;
+
+            foreach (DictionaryEntry item in pidByLivePartInstance)
+            {
+                if (!(item.Value is LivePartPid entry) || entry.Part == null || entry.Part == livePart)
+                    continue;
+                if (entry.Pid == pid)
+                    return true;
+            }
+
+            return false;
+        }
+
+        static string CreateUniqueLivePid(object part)
+        {
+            string pid;
+            do
+                pid = PidPrefix + Guid.NewGuid().ToString("N");
+            while (IsPidClaimedByAnotherPart(part, pid));
+            return pid;
         }
 
         static bool EnsureBlueprintFilePids(string path, bool updateRuntimeCache, bool force)
@@ -236,14 +442,15 @@ namespace PartId
                 if (string.IsNullOrEmpty(record.PartKey))
                     continue;
 
-                // Deterministic pid: derived from the part's identity (name + rounded position)
-                // and its ordinal among same-key parts, in blueprint file order. Any client
-                // reading the same blueprint computes the same pid, so a shared blueprint/save
-                // yields identical pids on every machine — no more random per-client divergence.
+                // New blueprints fall back to a deterministic initial pid. Once PartId has seen
+                // the live part, CreateSaves persists that pid in PartSave.TEXT_VARIABLES; from
+                // then on movement and rotation never change the identity.
                 int ordinal = partKeyCounts.TryGetValue(record.PartKey, out int seen) ? seen : 0;
                 partKeyCounts[record.PartKey] = ordinal + 1;
 
-                string pid = DeterministicPid(record.PartKey, ordinal);
+                string pid = IsValidPid(record.Pid) && usedPids[record.Pid] == null
+                    ? record.Pid
+                    : DeterministicPid(record.PartKey, ordinal);
 
                 // Collision guard (practically never triggers, since (partKey, ordinal) is
                 // unique): keep salting deterministically until the pid is unused here. Hard cap
@@ -252,12 +459,7 @@ namespace PartId
                 while (usedPids[pid] != null && salt < 10000)
                     pid = DeterministicPid(record.PartKey, ordinal, ++salt);
 
-                // If the part still carries an older pid (e.g. a random id written by an early
-                // PartId version), move its stored records onto the new deterministic pid so
-                // existing data is preserved rather than orphaned.
-                string oldPid = record.Pid;
-                if (!string.IsNullOrEmpty(oldPid) && oldPid != pid)
-                    PartIdRecordStore.MigratePid(oldPid, pid);
+                record.Pid = pid;
 
                 usedPids[pid] = true;
 
@@ -273,11 +475,9 @@ namespace PartId
                 }
             }
 
-            // NOTE: PartId never writes pids back into the blueprint file. With deterministic pids
-            // every part's id is recomputed on demand, so there is no need to modify the player's
-            // blueprint/save files at all — they are treated as strictly read-only. This removes
-            // any risk of corrupting or "polluting" the player's builds, and a shared file still
-            // resolves to identical pids on every machine (the values are computed, not stored).
+            // The file is read here only. The Harmony save hook adds the pid through SFS's own
+            // PartSave.TEXT_VARIABLES serialization path, so normal game saving remains atomic
+            // and a shared blueprint carries the same stable identities to another machine.
 
             if (updateRuntimeCache)
             {
@@ -377,12 +577,14 @@ namespace PartId
             if (!TryReadJsonNumber(positionBody, "x", out float x) || !TryReadJsonNumber(positionBody, "y", out float y))
                 return false;
 
-            Match pidMatch = Regex.Match(json, "\"" + PidKey + "\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
+            Match savedPidMatch = Regex.Match(json, "\"" + SavedPidKey + "\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
+            Match legacyPidMatch = Regex.Match(json, "\"" + PidKey + "\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"");
 
             record.Name = name;
             record.Position = new Vector2(x, y);
             record.PartKey = BuildPartKey(name, record.Position);
-            record.Pid = pidMatch.Success ? UnescapeJsonString(pidMatch.Groups[1].Value) : "";
+            record.Pid = savedPidMatch.Success ? UnescapeJsonString(savedPidMatch.Groups[1].Value) :
+                legacyPidMatch.Success ? UnescapeJsonString(legacyPidMatch.Groups[1].Value) : "";
             return true;
         }
 
@@ -485,26 +687,97 @@ namespace PartId
             return Math.Round(value, 2).ToString("0.##", CultureInfo.InvariantCulture);
         }
 
-        static bool TryGetPartName(object part, out string name)
+        static List<string> GetPartNameCandidates(object part)
         {
-            name = "";
+            var names = new List<string>();
             if (!IsUsablePart(part))
-                return false;
+                return names;
 
-            name = Convert.ToString(GetMemberValue(part.GetType(), part, "Name"), CultureInfo.InvariantCulture);
-            if (string.IsNullOrEmpty(name) && part is Component component && component != null)
+            if (part is Component component && component != null)
             {
                 try
                 {
-                    name = component.gameObject != null ? component.gameObject.name : "";
+                    AddUniqueName(names, NormalizeObjectName(component.gameObject != null ? component.gameObject.name : ""));
                 }
                 catch
                 {
-                    name = "";
                 }
             }
 
-            return !string.IsNullOrEmpty(name);
+            string displayName = Convert.ToString(GetMemberValue(part.GetType(), part, "Name"), CultureInfo.InvariantCulture);
+            if (TryGetInternalName(displayName, out string internalName))
+                AddUniqueName(names, internalName);
+            AddUniqueName(names, displayName);
+            return names;
+        }
+
+        static bool TryGetInternalName(string displayName, out string internalName)
+        {
+            internalName = null;
+            if (string.IsNullOrWhiteSpace(displayName))
+                return false;
+
+            EnsureInternalNameMap();
+            return !ambiguousDisplayNames.Contains(displayName) &&
+                internalNameByDisplayName.TryGetValue(displayName, out internalName) &&
+                !string.IsNullOrEmpty(internalName);
+        }
+
+        static void EnsureInternalNameMap()
+        {
+            if (internalNameByDisplayName.Count > 0 || SFS.Base.partsLoader == null || SFS.Base.partsLoader.parts == null)
+                return;
+
+            foreach (KeyValuePair<string, SFS.Parts.Part> pair in SFS.Base.partsLoader.parts)
+            {
+                if (string.IsNullOrEmpty(pair.Key) || pair.Value == null)
+                    continue;
+
+                string displayName;
+                try
+                {
+                    displayName = pair.Value.Name;
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(displayName) || ambiguousDisplayNames.Contains(displayName))
+                    continue;
+
+                if (internalNameByDisplayName.TryGetValue(displayName, out string existing) && existing != pair.Key)
+                {
+                    internalNameByDisplayName.Remove(displayName);
+                    ambiguousDisplayNames.Add(displayName);
+                }
+                else
+                {
+                    internalNameByDisplayName[displayName] = pair.Key;
+                }
+            }
+        }
+
+        static void AddUniqueName(List<string> names, string name)
+        {
+            if (!string.IsNullOrWhiteSpace(name) && !names.Contains(name))
+                names.Add(name);
+        }
+
+        static string NormalizeObjectName(string name)
+        {
+            name = name ?? "";
+            const string cloneSuffix = "(Clone)";
+            if (name.EndsWith(cloneSuffix, StringComparison.Ordinal))
+                name = name.Substring(0, name.Length - cloneSuffix.Length).TrimEnd();
+            return name;
+        }
+
+        static bool TryGetPartName(object part, out string name)
+        {
+            List<string> names = GetPartNameCandidates(part);
+            name = names.Count > 0 ? names[0] : "";
+            return names.Count > 0;
         }
 
         static bool TryGetPartPosition(object part, out Vector2 position)
@@ -708,5 +981,13 @@ namespace PartId
             public string PartKey;
             public string Pid;
         }
+
+        class LivePartPid
+        {
+            public UnityEngine.Object Part;
+            public string Pid;
+            public string PartKey;
+        }
+
     }
 }

@@ -17,6 +17,7 @@ mkdir -p "$ROOT/dist"
   -out:"$OUT" \
   -r:"$MANAGED/netstandard.dll" \
   -r:"$MANAGED/Assembly-CSharp.dll" \
+  -r:"$MANAGED/0Harmony.dll" \
   -r:"$MANAGED/UnityEngine.dll" \
   -r:"$MANAGED/UnityEngine.CoreModule.dll" \
   "$ROOT/Main.cs" \
@@ -27,6 +28,7 @@ mkdir -p "$ROOT/dist"
   "$ROOT/PartIdRecord.cs" \
   "$ROOT/PartIdValue.cs" \
   "$ROOT/PartIdRecordStore.cs" \
+  "$ROOT/PartIdIdentityPatch.cs" \
   "$ROOT/PartIdRuntime.cs"
 
 echo "$OUT"
